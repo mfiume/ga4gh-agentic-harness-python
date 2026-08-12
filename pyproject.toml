@@ -1,0 +1,50 @@
+[project]
+name = "ga4gh-agentic-harness"
+version = "0.1.0.dev0"
+description = "Protocol-neutral SDK for agentic access to GA4GH services"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "GA4GH Agentic Harness contributors" }]
+dependencies = [
+    "httpx>=0.27,<1",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.14,<2",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "respx>=0.22,<1",
+    "ruff>=0.9,<1",
+]
+
+[project.scripts]
+ga4gh-harness = "ga4gh_agentic_harness.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ga4gh_agentic_harness"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["live: opt-in tests against public network services"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+plugins = ["pydantic.mypy"]
+
