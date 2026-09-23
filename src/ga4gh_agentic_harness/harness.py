@@ -115,6 +115,14 @@ _OPERATION_METADATA: dict[Operation, tuple[str, str, str, str]] = {
 }
 
 
+class _OperationFailure(Exception):
+    """Carry a fully formed Harness error out of an operation action."""
+
+    def __init__(self, error: HarnessError) -> None:
+        super().__init__(error.message)
+        self.error = error
+
+
 def _default_authority() -> AuthorityContext:
     return AuthorityContext(software_actor="local-sdk")
 
@@ -328,6 +336,8 @@ class Harness:
 
     @staticmethod
     def _error_from_exception(exc: Exception) -> HarnessError:
+        if isinstance(exc, _OperationFailure):
+            return exc.error
         if isinstance(exc, AdapterError):
             result = exc.result
             status = result.status if result else None
@@ -649,6 +659,15 @@ class Harness:
         key = idempotency_key or request_id
         try:
             service = await self.registry.get(service_id)
+        except Exception as exc:
+            return await self._preflight_failure(
+                Operation.WES_RUN_SUBMIT, authority, exc, request_id=request_id, trace_id=trace_id
+            )
+        replay_warnings: list[Warning] = []
+
+        # The ledger record is created inside the action, after policy has permitted the
+        # submission, so a denied request cannot consume the idempotency key.
+        async def action(credential: OutboundCredential) -> dict[str, Any]:
             record, created = await self.ledger.create_submission(
                 service_id=service.id,
                 authority_key=_authority_key(authority),
@@ -656,45 +675,26 @@ class Harness:
                 idempotency_key=key,
                 details={"workflow_url": workflow_url, "workflow_type": workflow_type},
             )
-        except Exception as exc:
-            return await self._preflight_failure(
-                Operation.WES_RUN_SUBMIT, authority, exc, request_id=request_id, trace_id=trace_id
-            )
-        if not created and record.remote_run_id:
-            return ResultEnvelope[dict[str, Any]](
-                profile_version=self.settings.profile_version,
-                operation=Operation.WES_RUN_SUBMIT,
-                request_id=request_id,
-                status=ResultStatus.SUCCESS,
-                data=record.model_dump(),
-                trace_id=trace_id,
-                warnings=[
+            if not created and record.remote_run_id:
+                replay_warnings.append(
                     Warning(
                         code="IDEMPOTENT_REPLAY",
                         message="Returned the prior submission for this idempotency key.",
                     )
-                ],
-            )
-        if not created:
-            return await self._failure(
-                Operation.WES_RUN_SUBMIT,
-                request_id,
-                trace_id,
-                authority,
-                HarnessError(
-                    code=ErrorCode.UPSTREAM,
-                    message=(
-                        "a prior submission with this idempotency key has no confirmed run_id; "
-                        "reconcile it before attempting another submission"
-                    ),
-                    retryable=False,
-                    details={"local_run_id": record.local_run_id, "state": record.state},
-                ),
-                service=service,
-                policy_decision="reconciliation required",
-            )
-
-        async def action(credential: OutboundCredential) -> dict[str, Any]:
+                )
+                return record.model_dump()
+            if not created:
+                raise _OperationFailure(
+                    HarnessError(
+                        code=ErrorCode.UPSTREAM,
+                        message=(
+                            "a prior submission with this idempotency key has no confirmed "
+                            "run_id; reconcile it before attempting another submission"
+                        ),
+                        retryable=False,
+                        details={"local_run_id": record.local_run_id, "state": record.state},
+                    )
+                )
             try:
                 result = await self.wes.submit(
                     service,
@@ -729,6 +729,7 @@ class Harness:
             side_effects=True,
             request_id=request_id,
             trace_id=trace_id,
+            warnings=replay_warnings,
         )
 
     async def wes_run_get(

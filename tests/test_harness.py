@@ -256,3 +256,30 @@ async def test_policy_approval_requirement_blocks_side_effects(settings, registr
     assert cancelled.errors[0].code == ErrorCode.APPROVAL_REQUIRED
     assert not submit.called and not cancel.called
 
+
+@respx.mock
+async def test_denied_submission_does_not_consume_idempotency_key(
+    settings, registry_items
+) -> None:
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=registry_items)
+    )
+    route = respx.post("https://wes.test/ga4gh/wes/v1/runs").mock(
+        return_value=httpx.Response(200, json={"run_id": "remote-1"})
+    )
+    async with _harness(settings) as harness:
+        denied = await harness.wes_run_submit(
+            "wes-1", **_SUBMIT, idempotency_key="k", authority=AuthorityContext(software_actor="a")
+        )
+        accepted = await harness.wes_run_submit(
+            "wes-1",
+            **_SUBMIT,
+            idempotency_key="k",
+            authority=AuthorityContext(
+                software_actor="a", inbound_scopes=["ga4gh:workflow:submit"]
+            ),
+        )
+    assert denied.errors[0].code == ErrorCode.POLICY_DENIED
+    assert accepted.status == ResultStatus.SUCCESS, accepted.errors
+    assert route.call_count == 1
+
