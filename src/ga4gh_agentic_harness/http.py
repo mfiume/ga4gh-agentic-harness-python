@@ -126,8 +126,12 @@ class SafeHttpClient:
         current_url = url
         await self._validate_url(current_url)
         request_headers = dict(headers or {})
+        # Every header a credential provider supplies is secret-bearing, whatever its name
+        # (API keys, custom token headers), in addition to the well-known ambient ones.
+        sensitive = set(_SENSITIVE_HEADERS)
         if credential:
             request_headers.update(credential.headers)
+            sensitive.update(key.lower() for key in credential.headers)
         if idempotency_key:
             request_headers["Idempotency-Key"] = idempotency_key
         attempts = self._settings.max_retries + 1 if method in _SAFE_METHODS else 1
@@ -168,7 +172,7 @@ class SafeHttpClient:
             next_url = urljoin(current_url, location)
             await self._validate_url(next_url)
             if _origin(next_url) != _origin(current_url):
-                if any(key.lower() in _SENSITIVE_HEADERS for key in request_headers):
+                if any(key.lower() in sensitive for key in request_headers):
                     return HttpResult(
                         url=current_url,
                         error="cross-origin redirect blocked for credentialed request",

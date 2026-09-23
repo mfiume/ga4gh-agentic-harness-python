@@ -65,3 +65,42 @@ async def test_response_size_limit(settings: Settings) -> None:
     assert result.error_kind == "invalid_response"
     await client.aclose()
 
+
+
+@respx.mock
+async def test_cross_origin_redirect_is_blocked_for_any_credential_header(
+    settings: Settings,
+) -> None:
+    respx.get("https://service.test/value").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://other.test/value"})
+    )
+    other = respx.get("https://other.test/value").mock(return_value=httpx.Response(200, json={}))
+    client = SafeHttpClient(settings)
+    result = await client.request(
+        "GET",
+        "https://service.test/value",
+        credential=OutboundCredential(headers={"X-Api-Key": "secret"}),
+    )
+    assert result.error_kind == "security"
+    assert not other.called
+    await client.aclose()
+
+
+@respx.mock
+async def test_credentialed_redirect_cannot_downgrade_to_http(settings: Settings) -> None:
+    settings.allow_http = True
+    respx.get("https://service.test/value").mock(
+        return_value=httpx.Response(302, headers={"Location": "http://service.test/value"})
+    )
+    downgraded = respx.get("http://service.test/value").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = SafeHttpClient(settings)
+    result = await client.request(
+        "GET",
+        "https://service.test/value",
+        credential=OutboundCredential(headers={"Authorization": "Bearer secret"}),
+    )
+    assert result.error_kind == "security"
+    assert not downgraded.called
+    await client.aclose()
