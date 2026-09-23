@@ -73,7 +73,7 @@ For a local GA4GH Service Registry, the equivalent explicit CLI invocation is:
 
 ```bash
 uv run ga4gh-harness ga4gh.service.search \
-  --registry-url http://127.0.0.1:18080/ga4gh/registry \
+  --registry service-registry=http://127.0.0.1:18080/ga4gh/registry \
   --allow-http --allow-private-hosts \
   --input '{"product":"drs"}' --pretty
 ```
