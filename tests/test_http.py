@@ -104,3 +104,41 @@ async def test_credentialed_redirect_cannot_downgrade_to_http(settings: Settings
     assert result.error_kind == "security"
     assert not downgraded.called
     await client.aclose()
+
+
+@respx.mock
+async def test_credential_is_not_sent_outside_its_resource_origin(settings: Settings) -> None:
+    other = respx.get("https://other.test/value").mock(return_value=httpx.Response(200, json={}))
+    client = SafeHttpClient(settings)
+    credential = OutboundCredential(
+        headers={"Authorization": "Bearer secret"}, resource="https://service.test/api"
+    )
+    with pytest.raises(UnsafeUrlError):
+        await client.request("GET", "https://other.test/value", credential=credential)
+    assert not other.called
+    await client.aclose()
+
+
+@respx.mock
+async def test_credential_origin_match_ignores_default_port(settings: Settings) -> None:
+    route = respx.get("https://service.test/api/value").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = SafeHttpClient(settings)
+    credential = OutboundCredential(
+        headers={"Authorization": "Bearer secret"}, resource="https://SERVICE.test:443/api"
+    )
+    result = await client.request("GET", "https://service.test/api/value", credential=credential)
+    assert result.ok and route.called
+    await client.aclose()
+
+
+async def test_credential_is_not_sent_over_plain_http(settings: Settings) -> None:
+    settings.allow_http = True
+    client = SafeHttpClient(settings)
+    credential = OutboundCredential(
+        headers={"Authorization": "Bearer secret"}, resource="http://service.test/api"
+    )
+    with pytest.raises(UnsafeUrlError):
+        await client.request("GET", "http://service.test/api/value", credential=credential)
+    await client.aclose()

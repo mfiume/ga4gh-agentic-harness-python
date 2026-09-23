@@ -229,15 +229,20 @@ class Harness:
             credential = OutboundCredential()
             credential_metadata: dict[str, str] = {}
             if service:
+                resource = str(service.url).rstrip("/")
                 credential = await self.credentials.acquire(
                     CredentialRequest(
                         service=service,
                         operation=operation,
-                        resource=str(service.url).rstrip("/"),
+                        resource=resource,
                         scopes=[operation.value],
                         authority=authority,
                     )
                 )
+                # A provider that does not state its resource is bound to the one requested,
+                # so registry-supplied URLs on other origins never receive the credential.
+                if credential.resource is None:
+                    credential.resource = resource
                 credential_metadata = credential.audit_metadata()
             data = await action(credential)
         except Exception as exc:  # operation errors are always converted to envelopes

@@ -35,11 +35,16 @@ class CredentialRequest(BaseModel):
 
 @dataclass(slots=True)
 class OutboundCredential:
-    """Secret-bearing value restricted to the HTTP boundary."""
+    """Secret-bearing value restricted to the HTTP boundary.
+
+    ``resource`` is the URL the credential was acquired for. The HTTP boundary sends the
+    headers only to that resource's exact origin.
+    """
 
     headers: dict[str, str] = field(default_factory=dict, repr=False)
     issuer: str | None = None
     audience: str | None = None
+    resource: str | None = None
     grant_type: str = "public"
     subject_fingerprint: str | None = None
 
@@ -49,6 +54,7 @@ class OutboundCredential:
             for key, value in {
                 "issuer": self.issuer,
                 "audience": self.audience,
+                "resource": self.resource,
                 "grant_type": self.grant_type,
                 "subject_fingerprint": self.subject_fingerprint,
             }.items()
@@ -86,6 +92,7 @@ class EnvironmentBearerCredentialProvider:
         return OutboundCredential(
             headers={"Authorization": f"Bearer {token}"},
             audience=self._audience,
+            resource=self._audience,
             grant_type="configured_bearer",
         )
 

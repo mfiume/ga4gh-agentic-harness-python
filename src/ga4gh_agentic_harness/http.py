@@ -41,9 +41,13 @@ class HttpResult:
         return self.status is not None and 200 <= self.status < 300
 
 
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
 def _origin(url: str) -> tuple[str, str, int | None]:
     parts = urlsplit(url)
-    return parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORTS.get(scheme)
 
 
 def _is_public_ip(value: str) -> bool:
@@ -125,6 +129,7 @@ class SafeHttpClient:
         method = method.upper()
         current_url = url
         await self._validate_url(current_url)
+        credential_origin = self._credential_origin(current_url, credential)
         request_headers = dict(headers or {})
         # Every header a credential provider supplies is secret-bearing, whatever its name
         # (API keys, custom token headers), in addition to the well-known ambient ones.
@@ -171,7 +176,9 @@ class SafeHttpClient:
                 return result
             next_url = urljoin(current_url, location)
             await self._validate_url(next_url)
-            if _origin(next_url) != _origin(current_url):
+            if _origin(next_url) != _origin(current_url) or (
+                credential_origin is not None and _origin(next_url) != credential_origin
+            ):
                 if any(key.lower() in sensitive for key in request_headers):
                     return HttpResult(
                         url=current_url,
@@ -183,6 +190,20 @@ class SafeHttpClient:
             if result.status == 303:
                 method, json_body, data, files = "GET", None, None, None
         return HttpResult(url=current_url, error="redirect limit exceeded", error_kind="security")
+
+    @staticmethod
+    def _credential_origin(
+        url: str, credential: OutboundCredential | None
+    ) -> tuple[str, str, int | None] | None:
+        """Bind a secret-bearing credential to the exact origin it was acquired for."""
+        if credential is None or not credential.headers:
+            return None
+        bound = _origin(credential.resource or url)
+        if bound[0] != "https":
+            raise UnsafeUrlError("credentials are only sent to HTTPS origins")
+        if _origin(url) != bound:
+            raise UnsafeUrlError("credential is not bound to the request origin")
+        return bound
 
     def _response_result(self, response: httpx.Response, started: float) -> HttpResult:
         content = response.content

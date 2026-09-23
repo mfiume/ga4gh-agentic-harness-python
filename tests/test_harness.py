@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import respx
 
-from ga4gh_agentic_harness.auth import AuthorityContext
+from ga4gh_agentic_harness.auth import AuthorityContext, EnvironmentBearerCredentialProvider
 from ga4gh_agentic_harness.harness import Harness
 from ga4gh_agentic_harness.http import SafeHttpClient
 from ga4gh_agentic_harness.models import ErrorCode, Operation, ResultStatus
@@ -180,3 +180,33 @@ async def test_dispatch_rejects_unknown_operation(settings) -> None:
             assert "not a valid Operation" in str(exc)
         else:
             raise AssertionError("unknown operation was accepted")
+
+
+@respx.mock
+async def test_credential_is_not_sent_to_cross_origin_registry_metadata_url(
+    settings, registry_items, monkeypatch
+) -> None:
+    items = list(registry_items)
+    items[0] = dict(items[0]) | {"serviceInfoUrl": "https://evil.test/ga4gh/drs/v1/service-info"}
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=items)
+    )
+    evil = respx.get("https://evil.test/ga4gh/drs/v1/objects/object-1").mock(
+        return_value=httpx.Response(200, json={"id": "object-1"})
+    )
+    monkeypatch.setenv("TEST_DRS_TOKEN", "top-secret")
+    provider = EnvironmentBearerCredentialProvider(
+        variable="TEST_DRS_TOKEN", service_id="drs-1", audience="https://drs.test/ga4gh/drs/v1"
+    )
+    http = SafeHttpClient(settings)
+    harness = Harness(
+        settings=settings,
+        http=http,
+        registry=ServiceRegistry(http, settings),
+        credentials=provider,
+    )
+    async with harness:
+        result = await harness.drs_object_resolve("drs-1", "object-1")
+    assert result.status == ResultStatus.FAILURE
+    assert result.errors[0].code == ErrorCode.SECURITY
+    assert not any("authorization" in call.request.headers for call in evil.calls)
