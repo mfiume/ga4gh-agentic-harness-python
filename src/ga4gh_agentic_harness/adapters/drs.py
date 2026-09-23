@@ -27,6 +27,17 @@ class DrsAdapter(BaseAdapter):
         )
         if not isinstance(data, dict):
             raise ValueError("DRS object response must be an object")
+        methods = data.get("access_methods")
+        if isinstance(methods, list):
+            # DRS permits an access_url inline in the object, so the object response carries
+            # the same bearer capabilities as the access endpoint.
+            data = dict(data)
+            data["access_methods"] = [
+                dict(method, access_url=_redact_access_url(method["access_url"]))
+                if isinstance(method, dict) and isinstance(method.get("access_url"), dict)
+                else method
+                for method in methods
+            ]
         return data
 
     async def resolve_access(
@@ -44,16 +55,20 @@ class DrsAdapter(BaseAdapter):
         data = require_json(result)
         if not isinstance(data, dict):
             raise ValueError("DRS access response must be an object")
-        # Access headers can themselves be bearer capabilities. Keep them in the trusted result
-        # only when no values are present; otherwise replace them with a non-secret marker.
-        if data.get("headers"):
-            data = dict(data)
-            data["headers"] = {"redacted": True}
-            data["access_headers_available"] = True
-        access_url = data.get("url")
-        if isinstance(access_url, str) and urlsplit(access_url).query:
-            parts = urlsplit(access_url)
-            data = dict(data)
-            data["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
-            data["access_url_query_redacted"] = True
-        return data
+        return _redact_access_url(data)
+
+
+def _redact_access_url(data: dict[str, Any]) -> dict[str, Any]:
+    # Access headers can themselves be bearer capabilities. Keep them in the trusted result
+    # only when no values are present; otherwise replace them with a non-secret marker.
+    if data.get("headers"):
+        data = dict(data)
+        data["headers"] = {"redacted": True}
+        data["access_headers_available"] = True
+    access_url = data.get("url")
+    if isinstance(access_url, str) and urlsplit(access_url).query:
+        parts = urlsplit(access_url)
+        data = dict(data)
+        data["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        data["access_url_query_redacted"] = True
+    return data

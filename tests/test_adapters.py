@@ -136,3 +136,34 @@ async def test_dot_segment_identifiers_cannot_escape_the_resource_path(
         await WesAdapter(http).cancel(wes_service, run_id, OutboundCredential())
     assert not escaped.called
     await http.aclose()
+
+
+@respx.mock
+async def test_drs_object_inline_access_urls_are_redacted(settings, drs_service) -> None:
+    respx.get("https://drs.test/ga4gh/drs/v1/objects/object-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "object-1",
+                "access_methods": [
+                    {"type": "s3", "access_id": "s3"},
+                    {
+                        "type": "https",
+                        "access_url": {
+                            "url": "https://bucket.test/object?X-Amz-Signature=secret",
+                            "headers": ["Authorization: Bearer secret"],
+                        },
+                    },
+                ],
+            },
+        )
+    )
+    http = SafeHttpClient(settings)
+    obj = await DrsAdapter(http).resolve_object(drs_service, "object-1", OutboundCredential())
+    assert "secret" not in str(obj)
+    assert obj["access_methods"][0] == {"type": "s3", "access_id": "s3"}
+    inline = obj["access_methods"][1]["access_url"]
+    assert inline["url"] == "https://bucket.test/object"
+    assert inline["access_url_query_redacted"] is True
+    assert inline["headers"] == {"redacted": True}
+    await http.aclose()
