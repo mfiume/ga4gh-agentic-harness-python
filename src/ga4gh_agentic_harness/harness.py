@@ -743,6 +743,8 @@ class Harness:
         async def call(
             service: ServiceDescriptor, credential: OutboundCredential
         ) -> dict[str, Any]:
+            if local_run_id:
+                await self._owned_ledger_record(local_run_id, service, authority, run_id)
             result = await self.wes.get_run(service, run_id, credential)
             if local_run_id:
                 state = str(result.get("state") or "unknown").lower()
@@ -764,6 +766,8 @@ class Harness:
         async def call(
             service: ServiceDescriptor, credential: OutboundCredential
         ) -> dict[str, Any]:
+            if local_run_id:
+                await self._owned_ledger_record(local_run_id, service, authority, run_id)
             result = await self.wes.cancel(service, run_id, credential)
             if local_run_id:
                 await self.ledger.update(local_run_id, state="cancelled", remote_run_id=run_id)
@@ -776,6 +780,22 @@ class Harness:
             authority=authority,
             side_effects=True,
         )
+
+    async def _owned_ledger_record(
+        self,
+        local_run_id: str,
+        service: ServiceDescriptor,
+        authority: AuthorityContext | None,
+        run_id: str,
+    ) -> None:
+        """Refuse ledger updates for records another caller, service, or run owns."""
+        record = await self.ledger.get(local_run_id)
+        if (
+            record.service_id != service.id
+            or record.authority_key != _authority_key(authority or _default_authority())
+            or record.remote_run_id not in {None, run_id}
+        ):
+            raise PermissionError("local_run_id is not bound to this caller, service, and run")
 
     async def conformance_assess(
         self,

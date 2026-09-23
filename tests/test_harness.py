@@ -283,3 +283,31 @@ async def test_denied_submission_does_not_consume_idempotency_key(
     assert accepted.status == ResultStatus.SUCCESS, accepted.errors
     assert route.call_count == 1
 
+
+@respx.mock
+async def test_ledger_record_cannot_be_updated_by_another_caller(
+    settings, registry_items
+) -> None:
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=registry_items)
+    )
+    respx.post("https://wes.test/ga4gh/wes/v1/runs").mock(
+        return_value=httpx.Response(200, json={"run_id": "remote-1"})
+    )
+    other_run = respx.get("https://wes.test/ga4gh/wes/v1/runs/other-run").mock(
+        return_value=httpx.Response(200, json={"run_id": "other-run", "state": "CANCELED"})
+    )
+    owner = AuthorityContext(software_actor="owner", inbound_scopes=["ga4gh:workflow:submit"])
+    async with _harness(settings) as harness:
+        submitted = await harness.wes_run_submit("wes-1", **_SUBMIT, authority=owner)
+        local_run_id = submitted.data["ledger"]["local_run_id"]
+        foreign = await harness.wes_run_get(
+            "wes-1",
+            "other-run",
+            local_run_id=local_run_id,
+            authority=AuthorityContext(software_actor="intruder"),
+        )
+        record = await harness.ledger.get(local_run_id)
+    assert foreign.errors[0].code == ErrorCode.NOT_AUTHORIZED
+    assert not other_run.called
+    assert (record.state, record.remote_run_id) == ("submitted", "remote-1")
