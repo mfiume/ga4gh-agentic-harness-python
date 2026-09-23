@@ -225,6 +225,18 @@ class Harness:
                 service=service,
                 policy_decision=decision.reason,
             )
+        if decision.approval_required:
+            # A permit that still needs approval is not permission to act. The evaluator
+            # clears approval_required only once it holds an approval bound to this request.
+            return await self._failure(
+                operation,
+                request_id,
+                trace_id,
+                authority,
+                HarnessError(code=ErrorCode.APPROVAL_REQUIRED, message=decision.reason),
+                service=service,
+                policy_decision=decision.reason,
+            )
         try:
             credential = OutboundCredential()
             credential_metadata: dict[str, str] = {}

@@ -7,6 +7,7 @@ from ga4gh_agentic_harness.auth import AuthorityContext, EnvironmentBearerCreden
 from ga4gh_agentic_harness.harness import Harness
 from ga4gh_agentic_harness.http import SafeHttpClient
 from ga4gh_agentic_harness.models import ErrorCode, Operation, ResultStatus
+from ga4gh_agentic_harness.policy import PolicyDecision, PolicyRequest
 from ga4gh_agentic_harness.registry import ServiceRegistry
 from ga4gh_agentic_harness.tracing import MemoryTraceSink
 
@@ -210,3 +211,48 @@ async def test_credential_is_not_sent_to_cross_origin_registry_metadata_url(
     assert result.status == ResultStatus.FAILURE
     assert result.errors[0].code == ErrorCode.SECURITY
     assert not any("authorization" in call.request.headers for call in evil.calls)
+
+
+class _ApprovalPolicy:
+    async def evaluate(self, request: PolicyRequest) -> PolicyDecision:
+        if request.side_effects:
+            return PolicyDecision(
+                allowed=True, reason="scope present, approval pending", approval_required=True
+            )
+        return PolicyDecision(allowed=True, reason="read-only operation")
+
+
+_SUBMIT = {
+    "workflow_url": "trs://workflow/1",
+    "workflow_type": "CWL",
+    "workflow_type_version": "v1.2",
+    "workflow_params": {},
+}
+
+
+@respx.mock
+async def test_policy_approval_requirement_blocks_side_effects(settings, registry_items) -> None:
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=registry_items)
+    )
+    submit = respx.post("https://wes.test/ga4gh/wes/v1/runs").mock(
+        return_value=httpx.Response(200, json={"run_id": "remote-1"})
+    )
+    cancel = respx.post("https://wes.test/ga4gh/wes/v1/runs/remote-1/cancel").mock(
+        return_value=httpx.Response(200, json={"run_id": "remote-1"})
+    )
+    http = SafeHttpClient(settings)
+    harness = Harness(
+        settings=settings,
+        http=http,
+        registry=ServiceRegistry(http, settings),
+        policy=_ApprovalPolicy(),
+    )
+    authority = AuthorityContext(software_actor="test", inbound_scopes=["ga4gh:*"])
+    async with harness:
+        submitted = await harness.wes_run_submit("wes-1", **_SUBMIT, authority=authority)
+        cancelled = await harness.wes_run_cancel("wes-1", "remote-1", authority=authority)
+    assert submitted.errors[0].code == ErrorCode.APPROVAL_REQUIRED
+    assert cancelled.errors[0].code == ErrorCode.APPROVAL_REQUIRED
+    assert not submit.called and not cancel.called
+

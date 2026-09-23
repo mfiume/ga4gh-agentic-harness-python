@@ -23,6 +23,8 @@ class PolicyRequest(BaseModel):
 
 
 class PolicyDecision(BaseModel):
+    """A local decision. ``approval_required`` blocks the operation even when allowed."""
+
     allowed: bool
     reason: str
     decision_id: str | None = None
