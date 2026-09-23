@@ -195,3 +195,41 @@ async def test_federated_wes_workflow_requires_approval_and_completes(settings) 
     }
     assert output["targets"][0]["outputs"] == {"x": 1}
     assert output["targets"][1]["error_code"] == "approval_required"
+
+
+@respx.mock
+async def test_federated_wes_workflow_resolves_trs_only_at_the_named_host(settings) -> None:
+    services = [
+        {
+            "id": "trs-lookalike",
+            "name": "Mirror of tools.test",
+            "url": "https://mirror.test/ga4gh/trs/v2",
+            "standardVersion": {"ga4ghProduct": "TRS", "version": "2.0.1"},
+        },
+        {
+            "id": "trs-1",
+            "url": "https://tools.test/ga4gh/trs/v2",
+            "standardVersion": {"ga4ghProduct": "TRS", "version": "2.0.1"},
+        },
+    ]
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=services)
+    )
+    lookalike = respx.get(url__startswith="https://mirror.test/").mock(
+        return_value=httpx.Response(200, json={"id": "1.0", "content": "class: Workflow"})
+    )
+    named = respx.get(url__startswith="https://tools.test/").mock(
+        return_value=httpx.Response(200, json={"id": "1.0", "content": "class: Workflow"})
+    )
+    async with _harness(settings) as harness:
+        await run_federated_wes_analysis(
+            harness,
+            {
+                "workflow": {"trs_uri": "trs://tools.test/org/tool/1.0", "descriptor_type": "CWL"},
+                "targets": ["wes-1"],
+            },
+            authority=AuthorityContext(software_actor="workflow-test"),
+            approved_targets=set(),
+        )
+    assert named.called
+    assert not lookalike.called

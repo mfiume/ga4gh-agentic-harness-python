@@ -64,10 +64,19 @@ async def run(
     if not targets:
         raise ValueError("at least one WES target is required")
     host, tool_id, version = _parse_trs_uri(trs_uri)
-    search = await harness.service_search(query=host, product="TRS", authority=authority)
-    if not succeeded(search) or not search.data:
+    search = await harness.service_search(
+        query=host, product="TRS", limit=200, authority=authority
+    )
+    # The search matches text anywhere in a declaration, including names. Only a service
+    # whose URL host is the TRS URI's host may resolve the workflow.
+    candidates = [
+        service
+        for service in (search.data or [])
+        if urlsplit(str(service.url)).hostname == host.lower()
+    ]
+    if not succeeded(search) or not candidates:
         raise ValueError(f"no TRS service found for {host}")
-    trs_service_id = search.data[0].id
+    trs_service_id = candidates[0].id
     resolved_result = await harness.trs_workflow_resolve(
         trs_service_id,
         tool_id,
