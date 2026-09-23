@@ -311,3 +311,16 @@ async def test_ledger_record_cannot_be_updated_by_another_caller(
     assert foreign.errors[0].code == ErrorCode.NOT_AUTHORIZED
     assert not other_run.called
     assert (record.state, record.remote_run_id) == ("submitted", "remote-1")
+
+
+@respx.mock
+async def test_beacon_unsupported_version_maps_to_not_supported(settings, registry_items) -> None:
+    items = [dict(i) for i in registry_items]
+    items[2] = items[2] | {"standardVersion": {"ga4ghProduct": "Beacon", "version": "0.3.0"}}
+    respx.get("https://registry.test/api/services").mock(
+        return_value=httpx.Response(200, json=items)
+    )
+    async with _harness(settings) as harness:
+        result = await harness.beacon_variant_query("beacon-1", {"referenceName": "1"})
+    assert result.status == "failure"
+    assert result.errors[0].code == "NOT_SUPPORTED"

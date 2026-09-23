@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from .adapters import BeaconAdapter, DrsAdapter, TrsAdapter, WesAdapter
 from .adapters.base import AdapterError
+from .adapters.beacon import BeaconVersionError
 from .auth import (
     AuthorityContext,
     CredentialProvider,
@@ -51,7 +52,11 @@ _CAPABILITIES: dict[str, list[tuple[Operation, str, bool]]] = {
         (Operation.TRS_WORKFLOW_RESOLVE, "Resolve a versioned workflow from TRS.", False),
     ],
     "BEACON": [
-        (Operation.BEACON_VARIANT_QUERY, "Query a Beacon v2 genomic variation entry type.", False),
+        (
+            Operation.BEACON_VARIANT_QUERY,
+            "Query a Beacon v1 or v2 service for a genomic variant.",
+            False,
+        ),
     ],
     "WES": [
         (Operation.WES_SERVICE_DESCRIBE, "Describe WES capabilities and limits.", False),
@@ -359,6 +364,8 @@ class Harness:
                 retryable=bool(status in {429, 500, 502, 503, 504}),
                 native_status=status,
             )
+        if isinstance(exc, BeaconVersionError):
+            return HarnessError(code=ErrorCode.UNSUPPORTED, message=str(exc))
         if isinstance(exc, (UnsafeUrlError, PermissionError)):
             code = (
                 ErrorCode.SECURITY

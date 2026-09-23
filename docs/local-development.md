@@ -3,7 +3,7 @@
 ## Architecture
 
 `Harness` owns canonical operation semantics. `ServiceRegistry` normalizes registry records;
-DRS, TRS, Beacon v2, and WES adapters map operations to native APIs; `SafeHttpClient` enforces
+DRS, TRS, Beacon (v1 and v2), and WES adapters map operations to native APIs; `SafeHttpClient` enforces
 transport policy; and `WorkflowRunLedger` stores WES submission state in SQLite.
 
 Endpoints do not have to appear in the public implementation registry. Pass trusted,
@@ -79,3 +79,19 @@ uv run ga4gh-harness ga4gh.service.search \
 ```
 
 The HTTP and private-host flags are opt-in and should not be used for remote services.
+
+## Beacon versions
+
+`ga4gh.beacon.variant.query` picks the Beacon protocol from the version the service declares
+in its registry record (`standardVersion.version`, for example `v1.0` or `v2.0.0`). It does not
+probe the service to find out.
+
+- **v1** (`1.x`): `GET {url}/query` with BeaconAlleleRequest parameters. `referenceName`,
+  `referenceBases` and `assemblyId` are required. A v2 request entity is accepted and mapped:
+  `query.requestParameters` supplies the parameters, a two-element `start`/`end` range becomes
+  `startMin`/`startMax` and `endMin`/`endMax`, and `includeResultsetResponses` becomes
+  `includeDatasetResponses`. Only `entry_type` `g_variants` exists in v1. The native
+  BeaconAlleleResponse (`exists`, `datasetAlleleResponses`) is returned as is.
+- **v2** (`2.x`), or no declared version: `{url}/{entry_type}`, GET for a flat query and POST
+  for a request entity, as before.
+- Any other declared version (for example pre-1.0 `0.x`) fails with `NOT_SUPPORTED`.

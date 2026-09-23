@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from ga4gh_agentic_harness.adapters import BeaconAdapter, DrsAdapter, TrsAdapter, WesAdapter
+from ga4gh_agentic_harness.adapters.beacon import BeaconVersionError
 from ga4gh_agentic_harness.auth import OutboundCredential
 from ga4gh_agentic_harness.http import SafeHttpClient
 from ga4gh_agentic_harness.models import ServiceDescriptor
@@ -167,3 +168,97 @@ async def test_drs_object_inline_access_urls_are_redacted(settings, drs_service)
     assert inline["access_url_query_redacted"] is True
     assert inline["headers"] == {"redacted": True}
     await http.aclose()
+
+
+# ---- Beacon v1: selected by the version the service declares, never by probing it
+
+def _beacon(version: str | None) -> ServiceDescriptor:
+    return ServiceDescriptor(id="b1", product="Beacon", standard_version=version,
+                             url="https://beacon1.test/api")
+
+
+V1_QUERY = {"referenceName": "1", "start": 100000, "referenceBases": "A",
+            "alternateBases": "T", "assemblyId": "GRCh37"}
+
+
+@pytest.mark.parametrize("version", ["v1.0", "1.0.1", "1.1.0", "v1"])
+@respx.mock
+async def test_beacon_v1_declared_version_uses_query_endpoint(settings, version) -> None:
+    route = respx.get("https://beacon1.test/api/query").mock(return_value=httpx.Response(
+        200, json={"beaconId": "org.b1", "apiVersion": "v1.0.1", "exists": True}))
+    http = SafeHttpClient(settings)
+    result = await BeaconAdapter(http).query_variant(_beacon(version), dict(V1_QUERY),
+                                                     OutboundCredential())
+    await http.aclose()
+    assert result["exists"] is True
+    sent = dict(route.calls[0].request.url.params)
+    assert sent == {"referenceName": "1", "start": "100000", "referenceBases": "A",
+                    "alternateBases": "T", "assemblyId": "GRCh37"}
+
+
+@respx.mock
+async def test_beacon_v1_translates_v2_request_entity(settings) -> None:
+    route = respx.get("https://beacon1.test/api/query").mock(
+        return_value=httpx.Response(200, json={"exists": False}))
+    entity = {"meta": {"apiVersion": "2.0"}, "query": {
+        "requestParameters": {"referenceName": "X", "start": [100, 200], "end": [300, 400],
+                              "referenceBases": "N", "variantType": "DEL",
+                              "assemblyId": "GRCh38"},
+        "includeResultsetResponses": "HIT"}}
+    http = SafeHttpClient(settings)
+    await BeaconAdapter(http).query_variant(_beacon("v1.0"), entity, OutboundCredential())
+    await http.aclose()
+    assert dict(route.calls[0].request.url.params) == {
+        "referenceName": "X", "startMin": "100", "startMax": "200", "endMin": "300",
+        "endMax": "400", "referenceBases": "N", "variantType": "DEL", "assemblyId": "GRCh38",
+        "includeDatasetResponses": "HIT"}
+
+
+@respx.mock
+async def test_beacon_v1_renames_resultset_flag_in_flat_query(settings) -> None:
+    route = respx.get("https://beacon1.test/api/query").mock(
+        return_value=httpx.Response(200, json={"exists": False}))
+    http = SafeHttpClient(settings)
+    await BeaconAdapter(http).query_variant(
+        _beacon("1.0"), V1_QUERY | {"includeResultsetResponses": "ALL"}, OutboundCredential())
+    await http.aclose()
+    params = dict(route.calls[0].request.url.params)
+    assert params["includeDatasetResponses"] == "ALL"
+    assert "includeResultsetResponses" not in params
+
+
+async def test_beacon_v1_missing_required_fields_is_invalid_request(settings) -> None:
+    http = SafeHttpClient(settings)
+    with pytest.raises(ValueError, match=r"referenceBases.*assemblyId"):
+        await BeaconAdapter(http).query_variant(
+            _beacon("v1.0"), {"referenceName": "1", "start": 5}, OutboundCredential())
+    await http.aclose()
+
+
+async def test_beacon_v1_has_no_other_entry_types(settings) -> None:
+    http = SafeHttpClient(settings)
+    with pytest.raises(BeaconVersionError, match="g_variants"):
+        await BeaconAdapter(http).query_variant(_beacon("v1.0"), dict(V1_QUERY),
+                                                OutboundCredential(), entry_type="individuals")
+    await http.aclose()
+
+
+@pytest.mark.parametrize("version", ["0.3.0", "v3.0", "latest"])
+async def test_beacon_unsupported_declared_version_is_refused(settings, version) -> None:
+    http = SafeHttpClient(settings)
+    with pytest.raises(BeaconVersionError, match="Beacon"):
+        await BeaconAdapter(http).query_variant(_beacon(version), dict(V1_QUERY),
+                                                OutboundCredential())
+    await http.aclose()
+
+
+@pytest.mark.parametrize("version", [None, "v2.0.0", "2.0.0"])
+@respx.mock
+async def test_beacon_v2_or_undeclared_keeps_g_variants(settings, version) -> None:
+    route = respx.get("https://beacon1.test/api/g_variants").mock(
+        return_value=httpx.Response(200, json={"responseSummary": {"exists": True}}))
+    http = SafeHttpClient(settings)
+    await BeaconAdapter(http).query_variant(_beacon(version), dict(V1_QUERY),
+                                            OutboundCredential())
+    await http.aclose()
+    assert route.called
