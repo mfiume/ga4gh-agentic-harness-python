@@ -50,9 +50,30 @@ def _origin(url: str) -> tuple[str, str, int | None]:
     return scheme, (parts.hostname or "").lower(), parts.port or _DEFAULT_PORTS.get(scheme)
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    if ip.teredo is not None:
+        return ip.teredo[1]
+    if ip in _NAT64:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
+
+
 def _is_public_ip(value: str) -> bool:
     ip = ipaddress.ip_address(value)
-    return not (
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(ip)
+        if embedded is not None and not _is_public_ip(str(embedded)):
+            return False
+    # is_global excludes ranges that is_private does not, such as the RFC 6598 shared
+    # address space that hosts some cloud metadata endpoints (100.100.100.200).
+    return ip.is_global and not (
         ip.is_private
         or ip.is_loopback
         or ip.is_link_local

@@ -142,3 +142,19 @@ async def test_credential_is_not_sent_over_plain_http(settings: Settings) -> Non
     with pytest.raises(UnsafeUrlError):
         await client.request("GET", "http://service.test/api/value", credential=credential)
     await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://100.100.100.200/latest/meta-data/",  # shared address space (RFC 6598)
+        "https://[::ffff:169.254.169.254]/latest/meta-data/",
+        "https://[64:ff9b::a9fe:a9fe]/latest/meta-data/",  # NAT64 of 169.254.169.254
+        "https://[2002:a9fe:a9fe::]/",  # 6to4 of 169.254.169.254
+    ],
+)
+async def test_non_global_address_forms_are_blocked(url: str) -> None:
+    client = SafeHttpClient(Settings(max_retries=0))
+    with pytest.raises(UnsafeUrlError):
+        await client.request("GET", url)
+    await client.aclose()
