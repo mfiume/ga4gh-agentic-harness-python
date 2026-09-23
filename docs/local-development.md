@@ -56,8 +56,12 @@ credentials as runtime environment variables and use a pinned `CredentialProvide
 ## Transport defaults
 
 - HTTPS is required.
-- Private, loopback, link-local, reserved, and metadata destinations are blocked.
-- Credentialed redirects cannot cross origins.
+- Private, loopback, link-local, reserved, and metadata destinations are blocked. The address
+  is checked again when the connection is made, so a second DNS answer cannot redirect it.
+- Credential headers are sent only over HTTPS to the exact origin of the resource they were
+  acquired for, and credentialed redirects cannot cross origins.
+- Operations whose policy decision requires approval fail with `APPROVAL_REQUIRED` until the
+  `PolicyEvaluator` holds an approval for the request.
 - GET, HEAD, and OPTIONS receive bounded retries; mutations do not.
 - Responses are size-limited and transport errors become structured envelopes.
 
