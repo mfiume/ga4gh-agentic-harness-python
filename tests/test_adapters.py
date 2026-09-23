@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
 from ga4gh_agentic_harness.adapters import BeaconAdapter, DrsAdapter, TrsAdapter, WesAdapter
@@ -119,4 +120,19 @@ async def test_wes_submit_get_cancel(settings, wes_service) -> None:
     assert submit.calls[0].request.headers["Idempotency-Key"] == "idem-1"
     assert (await adapter.get_run(wes_service, "run-1", credential))["state"] == "COMPLETE"
     assert (await adapter.cancel(wes_service, "run-1", credential))["run_id"] == "run-1"
+    await http.aclose()
+
+
+@pytest.mark.parametrize("run_id", ["..", "."])
+@respx.mock
+async def test_dot_segment_identifiers_cannot_escape_the_resource_path(
+    settings, wes_service, run_id
+) -> None:
+    escaped = respx.post(url__regex=r"https://wes\.test/ga4gh/wes/v1(/runs)?/cancel").mock(
+        return_value=httpx.Response(200, json={"run_id": "other"})
+    )
+    http = SafeHttpClient(settings)
+    with pytest.raises(ValueError):
+        await WesAdapter(http).cancel(wes_service, run_id, OutboundCredential())
+    assert not escaped.called
     await http.aclose()

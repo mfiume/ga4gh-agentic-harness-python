@@ -24,6 +24,10 @@ def api_base(service: ServiceDescriptor) -> str:
 
 
 def segment(value: str) -> str:
+    # quote() leaves "." and ".." intact, and URL normalization then resolves them as dot
+    # segments: run_id ".." would turn POST .../runs/../cancel into POST .../cancel.
+    if value in {"", ".", ".."}:
+        raise ValueError(f"identifier {value!r} is not a valid path segment")
     return quote(value, safe="")
 
 
