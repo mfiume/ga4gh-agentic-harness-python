@@ -7,10 +7,12 @@ import ipaddress
 import socket
 import ssl
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
+import httpcore
 import httpx
 
 from .auth import OutboundCredential
@@ -83,6 +85,65 @@ def _is_public_ip(value: str) -> bool:
     )
 
 
+class _PublicAddressBackend(httpcore.AsyncNetworkBackend):
+    """Resolve at connect time and connect only to the public address that was checked.
+
+    Validating a hostname before the request and letting the transport resolve it again
+    leaves a DNS rebinding window: the second answer can be a loopback or metadata address.
+    """
+
+    def __init__(self) -> None:
+        self._backend = httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, port, type=socket.SOCK_STREAM
+        )
+        addresses = [str(info[4][0]) for info in infos]
+        if not addresses or any(not _is_public_ip(address) for address in addresses):
+            raise UnsafeUrlError("host resolves to a private, local, or reserved address")
+        return await self._backend.connect_tcp(
+            addresses[0],
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        raise UnsafeUrlError("unix socket targets are prohibited")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+class _PublicAddressTransport(httpx.AsyncHTTPTransport):
+    def __init__(self, *, verify: bool) -> None:
+        super().__init__(verify=verify)
+        limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+        # httpx does not expose a network backend option, so the pool it built is replaced
+        # with an equivalent one that uses the connect-time address check.
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=httpx.create_ssl_context(verify=verify),
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=5.0,
+            network_backend=_PublicAddressBackend(),
+        )
+
+
 class SafeHttpClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
@@ -100,6 +161,11 @@ class SafeHttpClient:
             self._client = httpx.AsyncClient(
                 timeout=timeout,
                 verify=self._settings.verify_tls,
+                transport=(
+                    None
+                    if self._settings.allow_private_hosts
+                    else _PublicAddressTransport(verify=self._settings.verify_tls)
+                ),
                 follow_redirects=False,
                 headers={"Accept": "application/json", "User-Agent": self._settings.user_agent},
             )
@@ -253,7 +319,9 @@ class SafeHttpClient:
     @staticmethod
     def _transport_error(url: str, exc: Exception, started: float) -> HttpResult:
         kind = "connection"
-        if isinstance(exc, httpx.TimeoutException):
+        if isinstance(exc, UnsafeUrlError):
+            kind = "security"
+        elif isinstance(exc, httpx.TimeoutException):
             kind = "timeout"
         elif isinstance(exc, ssl.SSLError) or "ssl" in str(exc).lower():
             kind = "tls"

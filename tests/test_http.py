@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import socket
+from typing import Any
+
 import httpx
 import pytest
 import respx
@@ -158,3 +162,38 @@ async def test_non_global_address_forms_are_blocked(url: str) -> None:
     with pytest.raises(UnsafeUrlError):
         await client.request("GET", url)
     await client.aclose()
+
+
+async def test_dns_rebinding_to_loopback_is_blocked_at_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        requests.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    real_getaddrinfo = socket.getaddrinfo
+    answers = iter(["93.184.216.34", "127.0.0.1", "127.0.0.1", "127.0.0.1"])
+
+    def rebinding_getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host in ("rebind.test", b"rebind.test"):
+            address = next(answers)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", rebinding_getaddrinfo)
+    client = SafeHttpClient(Settings(allow_http=True, max_retries=0))
+    try:
+        result = await client.request("GET", f"http://rebind.test:{port}/value")
+    finally:
+        await client.aclose()
+        server.close()
+        await server.wait_closed()
+    assert result.status is None
+    assert result.error_kind == "security"
+    assert requests == []
